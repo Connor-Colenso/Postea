@@ -43,8 +43,9 @@ public final class PosteaLoadingPlugin implements IEarlyMixinLoader, IFMLLoading
     @Override
     public List<String> getMixins(Set<String> loadedCoreMods) {
         final List<String> mixins = new ArrayList<>();
-        mixins.add("MixinItemStack");
-        mixins.add("MixinAnvilChunkLoader");
+        mixins.add("MixinMinecraftServer");
+        mixins.add("MixinItemBlock");
+        mixins.add("MixinWorld");
         return mixins;
     }
 }
