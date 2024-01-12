@@ -1,5 +1,7 @@
 package com.colen.postea.Utility;
 
+import static com.colen.postea.Utility.PosteaUtilities.getModListHash;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BiFunction;
@@ -19,47 +21,67 @@ import cpw.mods.fml.common.registry.GameRegistry;
 public class ChunkFixerUtility {
 
     public static void processChunkNBT(NBTTagCompound compound, World world) {
-        transformTileEntities(compound, world);
-        transformNormalBlocks(compound, world);
+        NBTTagCompound levelCompoundTag = compound.getCompoundTag("Level");
+
+        if (processChunk(levelCompoundTag)) {
+            transformTileEntities(levelCompoundTag, world);
+            transformNormalBlocks(levelCompoundTag, world);
+            levelCompoundTag.setInteger("POSTEA", POSTEA_UPDATE_CODE);
+        }
     }
 
-    private static void transformNormalBlocks(NBTTagCompound compound, World world) {
-        NBTTagCompound level = compound.getCompoundTag("Level");
-        NBTTagList sections = level.getTagList("Sections", 10);
+    // This will not change between runs, unless a mod is updated or added.
+    public static final int POSTEA_UPDATE_CODE = getModListHash();
 
-        int chunkXPos = level.getInteger("xPos") * 16; // Assuming each chunk is 16 blocks along x-axis
-        int chunkZPos = level.getInteger("zPos") * 16; // Assuming each chunk is 16 blocks along z-axis
+    // If a chunk has the same postea code, then do not update it. Return false.
+    private static boolean processChunk(NBTTagCompound compound) {
+        // I'm minimising the string length here since this
+        // will be on every single chunk in every world... Rather not duplicate too much.
+        if (compound.hasKey("POSTEA")) {
+            return compound.getInteger("POSTEA") != POSTEA_UPDATE_CODE;
+        }
+        return true;
+    }
+
+    private static void transformNormalBlocks(NBTTagCompound levelCompoundTag, World world) {
+        NBTTagList sections = levelCompoundTag.getTagList("Sections", 10);
+
+        int chunkXPos = levelCompoundTag.getInteger("xPos") * 16;
+        int chunkZPos = levelCompoundTag.getInteger("zPos") * 16;
 
         for (int i = 0; i < sections.tagCount(); i++) {
             NBTTagCompound section = sections.getCompoundTagAt(i);
+
+            // Blocks16 and Data16 exist only because of NEID.
             byte[] blockArray = section.getByteArray("Blocks16");
-            byte[] metadataArray = section.getByteArray("Data");
+            byte[] metadataArray = section.getByteArray("Data16");
+
             byte sectionY = section.getByte("Y");
 
             for (int index = 0; index < blockArray.length / 2; index++) {
                 int blockId = ((blockArray[index * 2] & 0xFF) << 8) | (blockArray[index * 2 + 1] & 0xFF);
-                byte metadata = (byte) ((index & 1) == 0 ? (metadataArray[index / 2] & 0x0F)
-                    : ((metadataArray[index / 2] & 0xF0) >> 4));
+                int metadata = ((metadataArray[index * 2] & 0xFF) << 8) | (metadataArray[index * 2 + 1] & 0xFF);
 
                 Block block = Block.getBlockById(blockId);
                 String blockName = GameRegistry.findUniqueIdentifierFor(block)
                     .toString();
 
                 BlockConversionInfo blockConversionInfo = new BlockConversionInfo();
-                blockConversionInfo.blocKName = blockName;
+                blockConversionInfo.blockName = blockName;
                 blockConversionInfo.blockID = blockId;
-                blockConversionInfo.metadata = metadata;
+                blockConversionInfo.metadata = (byte) metadata; // Updated
                 blockConversionInfo.world = world;
 
                 int x = index % 16;
-                int y = (index / 256) + (sectionY * 16); // Add the offset of the current section in Y direction
+                int y = (index / 256) + (sectionY * 16);
                 int z = (index / 16) % 16;
 
                 blockConversionInfo.x = x + chunkXPos + 1;
-                blockConversionInfo.y = y; // Y remains unchanged as it's already global
+                blockConversionInfo.y = y;
                 blockConversionInfo.z = z + chunkZPos + 1;
 
-                BlockConversionInfo output = BlockReplacementManager.getBlockReplacement(blockConversionInfo);
+                BlockConversionInfo output = BlockReplacementManager.getBlockReplacement(blockConversionInfo, world);
+
                 if (output != null) {
                     int newBlockId = output.blockID;
                     int newMetadata = output.metadata;
@@ -67,33 +89,29 @@ public class ChunkFixerUtility {
                     blockArray[index * 2] = (byte) ((newBlockId >> 8) & 0xFF);
                     blockArray[index * 2 + 1] = (byte) (newBlockId & 0xFF);
 
-                    if ((index & 1) == 0) { // Even
-                        metadataArray[index / 2] &= 0xF0;
-                        metadataArray[index / 2] |= (newMetadata & 0x0F);
-                    } else { // Odd
-                        metadataArray[index / 2] &= 0x0F;
-                        metadataArray[index / 2] |= ((newMetadata << 4) & 0xF0);
-                    }
+                    metadataArray[index * 2] = (byte) ((newMetadata >> 8) & 0xFF);
+                    metadataArray[index * 2 + 1] = (byte) (newMetadata & 0xFF);
                 }
             }
         }
     }
 
-    public static void transformTileEntities(NBTTagCompound chunkNBT, World world) {
-        NBTTagCompound level = chunkNBT.getCompoundTag("Level");
+    private static void transformTileEntities(NBTTagCompound levelCompoundTag, World world) {
 
-        Pair<List<ConversionInfo>, NBTTagList> output = adjustTileEntities(level.getTagList("TileEntities", 10), world);
+        Pair<List<ConversionInfo>, NBTTagList> output = adjustTileEntities(
+            levelCompoundTag.getTagList("TileEntities", 10),
+            world);
         List<ConversionInfo> conversionInfoList = output.first();
         NBTTagList tileEntities = output.second();
 
         if (tileEntities.tagCount() > 0) {
-            level.setTag("TileEntities", tileEntities);
+            levelCompoundTag.setTag("TileEntities", tileEntities);
         }
 
-        int chunkXPos = level.getInteger("xPos") * 16; // Assuming each chunk is 16 blocks along x-axis
-        int chunkZPos = level.getInteger("zPos") * 16; // Assuming each chunk is 16 blocks along z-axis
+        int chunkXPos = levelCompoundTag.getInteger("xPos") * 16; // Assuming each chunk is 16 blocks along x-axis
+        int chunkZPos = levelCompoundTag.getInteger("zPos") * 16; // Assuming each chunk is 16 blocks along z-axis
 
-        NBTTagList sections = level.getTagList("Sections", 10);
+        NBTTagList sections = levelCompoundTag.getTagList("Sections", 10);
         for (int i = 0; i < sections.tagCount(); i++) {
             NBTTagCompound section = sections.getCompoundTagAt(i);
             processSection(section, conversionInfoList, chunkXPos, chunkZPos);
@@ -103,7 +121,7 @@ public class ChunkFixerUtility {
     private static void processSection(NBTTagCompound section, List<ConversionInfo> conversionInfoList, int chunkXPos,
         int chunkZPos) {
         byte[] blockArray = section.getByteArray("Blocks16");
-        byte[] metadataArray = section.getByteArray("Data");
+        byte[] metadataArray = section.getByteArray("Data16"); // Updated to use Data16
         byte y = section.getByte("Y");
 
         List<ConversionInfo> filteredList = filterConversionInfosByY(conversionInfoList, y);
@@ -112,7 +130,7 @@ public class ChunkFixerUtility {
             int[] localCoords = convertToChunkLocalCoordinates(info, y, chunkXPos, chunkZPos);
             int index = computeBlockIndex(localCoords);
             setBlockInfo(info.blockInfo.block, index, blockArray);
-            setMetadata(info.blockInfo.metadata, index, metadataArray);
+            setMetadata(info.blockInfo.metadata, index, metadataArray); // This uses the updated setMetadata
         }
     }
 
@@ -140,18 +158,12 @@ public class ChunkFixerUtility {
     }
 
     private static void setMetadata(int metadata, int index, byte[] metadataArray) {
-        int metadataIndex = index / 2;
-        byte currentMetadataByte = metadataArray[metadataIndex];
+        // Since each metadata is now two bytes, multiply the index by 2 to get the correct position.
+        int metadataStartIndex = index * 2;
 
-        if ((index & 1) == 0) { // Even
-            currentMetadataByte &= 0xF0;
-            currentMetadataByte |= (metadata & 0x0F);
-        } else { // Odd
-            currentMetadataByte &= 0x0F;
-            currentMetadataByte |= ((metadata << 4) & 0xF0);
-        }
-
-        metadataArray[metadataIndex] = currentMetadataByte;
+        // Split the 16-bit metadata into two bytes and store them in the array.
+        metadataArray[metadataStartIndex] = (byte) ((metadata >> 8) & 0xFF); // Higher 8 bits
+        metadataArray[metadataStartIndex + 1] = (byte) (metadata & 0xFF); // Lower 8 bits
     }
 
     private static Pair<List<ConversionInfo>, NBTTagList> adjustTileEntities(NBTTagList tileEntities, World world) {
@@ -179,13 +191,15 @@ public class ChunkFixerUtility {
                 } // Otherwise they are removed, therefore not appended.
 
                 conversionInfo.add(new ConversionInfo(x, y, z, blockInfo));
+            } else {
+                tileEntitiesCopy.appendTag(tileEntity);
             }
         }
 
         return new Pair<>(conversionInfo, tileEntitiesCopy);
     }
 
-    public static class ConversionInfo {
+    private static class ConversionInfo {
 
         public final int x;
         public final int y;
